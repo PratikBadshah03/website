@@ -1,55 +1,51 @@
 pipeline {
-    agent any
+    agent { label 'k8s-master' }
+
+    parameters {
+        booleanParam(name: 'FORCE_RELEASE', defaultValue: true, description: 'Bypass 25th of month check for immediate testing')
+    }
+
+    triggers {
+        cron('0 0 25 * *')
+        githubPush()
+    }
+
+    environment {
+        DOCKER_IMAGE = "pratikbadshah03/analytics-website"
+    }
 
     stages {
-        stage('Job1 : build') {
+        stage('Checkout Source Code') {
             steps {
-                echo 'Building Docker image'
-
-                sh '''
-                    docker build -t abode-webapp:latest .
-                '''
+                git branch: 'master', url: 'https://github.com/PratikBadshah03/website.git'
             }
         }
-
-        stage('Job2 : test') {
+        stage('Build Custom Docker Image') {
             steps {
-                echo 'Deploying to test environment'
-
-                sh '''
-                    docker rm -f abode-test || true
-
-                    docker run -d \
-                        --name abode-test \
-                        -p 8081:80 \
-                        abode-webapp:latest
-
-                    sleep 3
-
-                    curl -f http://localhost:8081/
-                '''
+                sh "docker build -t ${DOCKER_IMAGE}:${BUILD_NUMBER} -t ${DOCKER_IMAGE}:latest ."
             }
         }
-
-        stage('Job3 : prod') {
+        stage('Push Image to Docker Hub') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                    sh '''
+                        echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+                        docker push ${DOCKER_IMAGE}:${BUILD_NUMBER}
+                        docker push ${DOCKER_IMAGE}:latest
+                    '''
+                }
+            }
+        }
+        stage('Deploy to Kubernetes') {
             when {
-                branch 'master'
+                expression {
+                    return (new Date().format("dd") == "25" || params.FORCE_RELEASE == true)
+                }
             }
-
             steps {
-                echo 'Deploying to production'
-
                 sh '''
-                    docker rm -f abode-prod || true
-
-                    docker run -d \
-                        --name abode-prod \
-                        -p 80:80 \
-                        abode-webapp:latest
-
-                    sleep 3
-
-                    curl -f http://localhost:80/
+                    kubectl apply -f k8s-deploy.yaml
+                    kubectl rollout restart deployment/analytics-web-deploy
                 '''
             }
         }
